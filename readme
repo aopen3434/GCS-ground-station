@@ -1,0 +1,11 @@
+Build you own Ground station. 
+GCS server Wifi enabled Xbee with bluetooth modules. The Idea is to be 
+able to connect to your multi copter no weirs from a mobile phone or PC, 
+tablet no matter what Operating system is being used. I have been working 
+on this for some time. I have this running on a UNO with a double xbee 
+shield, 2.4 xbee, xbee wifly module, Bluetooth wifly module. I would Like 
+to add a web server to the mix to to display GCS data via Http or PHP. 
+I found this Rascal board that uses python that built to do 
+just what I am proposing. Hearer is the code I have so fare no web services yet.
+https://api.ning.com/files/5aKyVFhenSWrrF*H-jmi40lTAmqhsKQrdXuT7aidmHyfZAc0xBRYA*9DxcTgKCvMCcG YfYdxqISIqfsYCloqew
+https://youtu.be/lgGiVKvGGsI
