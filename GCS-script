@@ -1,0 +1,388 @@
+#include "WiFly.h" // We use this for the preinstantiated SpiSerial object.
+#include "SoftwareSerial.h"
+SoftwareSerial mySerial(6, 5); // RX, TX
+SoftwareSerial BluSerial(7, 8); // RX, TX
+
+//ANTENA START
+#include
+Servo PanServo,TiltServo;
+#define pi 3.14159
+
+/************************ SETTINGS ******************************/
+
+
+//Servo pulse boundaries.
+#define panMinPulse 600
+#define panMaxPulse 2490
+#define tiltMinPulse 550
+#define tiltMaxPulse 2450
+#define serialBaudRate 57600
+char ssid[] = "ssid";
+char passphrase[] = "passphrase";
+#define panDefaultPos 0.5*pi //Pan default position in radians, should be between 0 and pi.
+#define tiltDefaultPos 0.0 //Tilt default position...
+
+#define overlapFactor 1.1 //The factor that determines how much the heading
+//must go over the servo limits (180 degrees) for
+//the tilt to switch to the other side. I.e.
+// 1.1 as default setting gives you an 18 degree "gray
+// area" where the pan/tilt doesn't switch sides even
+//if the pan servo goes to its limit.
+
+#define servoRefreshInterval 20 //Defines the refresh rate and thus the speed of the servos.
+//The lover the value the faster the servos move.
+
+
+/************************************************** **************/
+
+
+int SerialStatus=0;
+int trackerStatus=0;
+
+bool singPositive=true;
+
+byte buf[31];
+int bufPointer=0;
+bool gotNewFix=false;
+
+int greenLed=12;
+int redLed=11;
+int actionButton=3;
+
+int tiltCurrentPos=(tiltDefaultPos*180/pi),panCurrentPos=(panDefaultPos*180/pi);
+
+
+long utm_east=0;
+long utm_north=0;
+long * tempPointer;
+long alt=0;
+byte CRCa=0,CRCb=0;
+
+unsigned long time=0,time_last=0;
+
+#define UNINIT 0
+#define GOT_STX 1
+#define GOT_LENGHT 2
+#define GOT_PAYLOAD 3
+#define GOT_CRCa 4
+#define GOT_WHOLE_MESSAGE 5
+
+#define GOT_TRACKER_POS 1
+#define GOT_TRACKER_ORIENTATION 2
+
+long tracker_utm_east=0;
+long tracker_utm_north=0;
+long tracker_alt=0;
+float trackerHeading=0;
+
+float trackerPanSetpoint=panDefaultPos;
+float trackerTiltSetpoint=tiltDefaultPos;
+
+void setup() {
+
+Serial.begin(57600);
+Serial.println("SPI UART on WiFly Shield terminal tool");
+Serial.println("--------------------------------------");
+Serial.println();
+Serial.println("This is a tool to help you troubleshoot problems with the WiFly shield.");
+Serial.println("For consistent results unplug & replug power to your Arduino and WiFly shield.");
+Serial.println("(Ensure the serial monitor is not open when you remove power.)");
+Serial.println();
+Serial.println(WiFly.ip());
+delay(100);
+Serial.println("Attempting to connect to SPI UART...");
+SpiSerial.begin();
+Serial.println("Connected to SPI UART.");
+Serial.println();
+
+WiFly.begin() ;
+Serial.println("WiFly.begin finished.");
+
+//if (!WiFly.join(WEP_MODE)) {Serial.println("Association failed.");
+//while (1) {
+// Hang on failure.
+//}
+//}
+Serial.println("connecting...");
+
+if (!WiFly.join(ssid, passphrase)) {
+Serial.println("Association failed.");
+while (1) {
+// Hang on failure.
+}
+}
+
+Serial.println("Associated!");
+SpiSerial.print("$$$");
+delay(500);
+SpiSerial.println("set wlan join 4");
+delay(3000);
+SpiSerial.println("set wlan ssid Bitter3434_adhoc");
+delay(3000);
+SpiSerial.println("set wlan chan 1");
+delay(3000);
+SpiSerial.println("set ip address 192.168.0.88");
+delay(3000);
+SpiSerial.println("set ip netmask 255.255.255.0");
+delay(3000);
+SpiSerial.println("set ip dhcp 0");
+delay(3000);
+
+Serial.println(" * Use $$$ (with no line ending) to enter WiFly command mode. (\"CMD\")");
+Serial.println(" * Then send each command followed by a carriage return.");
+Serial.println();
+
+Serial.println("Waiting for input.");
+Serial.println();
+
+
+//ANTENA START
+
+PanServo.attach(9,panMinPulse,panMaxPulse);
+TiltServo.attach(10,tiltMinPulse,tiltMaxPulse);
+PanServo.write(panDefaultPos*180/pi);
+TiltServo.write(tiltDefaultPos*180/pi);
+time=time_last=millis();
+Serial.begin(serialBaudRate);
+pinMode(greenLed,OUTPUT);
+pinMode(redLed,OUTPUT);
+pinMode(actionButton,INPUT);
+digitalWrite(actionButton,HIGH);
+digitalWrite(greenLed,LOW);
+digitalWrite(redLed,LOW);
+}
+
+
+void loop() {
+// Terminal routine
+
+// Always display a response uninterrupted by typing
+// but note that this makes the terminal unresponsive
+// while a response is being received.
+while(SpiSerial.available() > 0) {
+Serial.print(SpiSerial.read(), BYTE);
+}
+
+if(Serial.available()) { // Outgoing data
+SpiSerial.print(Serial.read(), BYTE);
+
+if (Serial.available())
+mySerial.print(Serial.read(), BYTE);
+
+if (Serial.available())
+Serial.print(Serial.read(), BYTE);
+
+}
+//ANTENA START
+{
+
+
+if(Serial.available())
+{
+byte c=Serial.read();
+switch(SerialStatus)
+{
+case UNINIT:
+
+if(c==0x99)
+{
+SerialStatus++;
+bufPointer=0;
+
+}
+break;
+
+case GOT_STX:
+if(c==0x21)
+{
+SerialStatus++;
+
+CRCa=CRCb=0x21;
+}
+else SerialStatus=UNINIT;
+break;
+case GOT_LENGHT:
+buf[bufPointer++]=c;
+
+CRCa+=c;
+CRCb+=CRCa;
+
+if(bufPointer>=29)SerialStatus++;
+break;
+case GOT_PAYLOAD:
+if(c==CRCa)SerialStatus++;
+else SerialStatus=UNINIT;
+break;
+case GOT_CRCa:
+if(c==CRCb)SerialStatus++;
+else SerialStatus=UNINIT;
+break;
+case GOT_WHOLE_MESSAGE:
+if(buf[1]==8)
+{
+
+utm_east=*((long *)&buf[3]);
+utm_north=*((long *)&buf[7]);
+alt=*((long *)&buf[13]);
+gotNewFix=true;
+digitalWrite(greenLed,HIGH);
+
+}
+
+
+SerialStatus=UNINIT;
+break;
+default:
+SerialStatus=UNINIT;
+}
+}
+
+double deltaEasting=0;
+double deltaNorthing=0;
+double deltaAlt=0;
+
+double distance=0;
+switch(trackerStatus)
+{
+
+
+case UNINIT:
+trackerPanSetpoint=panDefaultPos;
+trackerTiltSetpoint=tiltDefaultPos;
+
+if(digitalRead(actionButton)==LOW)
+{
+digitalWrite(redLed,HIGH);
+while(digitalRead(actionButton)==LOW);
+digitalWrite(redLed,LOW);
+tracker_utm_east=utm_east;
+tracker_utm_north=utm_north;
+tracker_alt=alt;
+trackerStatus++;
+}
+break;
+case GOT_TRACKER_POS:
+if(digitalRead(actionButton)==LOW)
+{
+digitalWrite(redLed,HIGH);
+while(digitalRead(actionButton)==LOW);
+digitalWrite(redLed,LOW);
+deltaEasting=utm_east-tracker_utm_east;
+deltaNorthing=utm_north-tracker_utm_north;
+
+if(deltaEasting==0) //Easting cannot be zero if we want to calculate the atan(northing/easting).
+{
+if(deltaNorthing<0)trackerHeading=-(pi)/2;
+else if(deltaNorthing!=0)trackerHeading=pi/2;
+else break;
+trackerStatus++;
+break;
+}
+if(deltaNorthing==0)
+{
+if(deltaEasting<0)trackerHeading=pi;
+else trackerHeading=0;
+trackerStatus++;
+break;
+}
+
+trackerHeading=atan(deltaNorthing/deltaEasting);
+
+if(deltaNorthing<0)if(trackerHeading>0)trackerHead ing-=pi;
+if(deltaNorthing>0)if(trackerHeading<0)trackerHead ing+=pi;
+
+trackerStatus++;
+break;
+}
+break;
+case GOT_TRACKER_ORIENTATION: //Now we can do the tracking...
+
+if(!gotNewFix)break;
+gotNewFix=false;
+
+
+deltaEasting=utm_east-tracker_utm_east;
+deltaNorthing=utm_north-tracker_utm_north;
+deltaAlt=alt-tracker_alt;
+if(deltaAlt<0)deltaAlt=0;
+
+distance=sqrt((deltaEasting*deltaEasting)+(deltaNo rthing*deltaNorthing));
+
+if(distance>1000)trackerTiltSetpoint=atan(deltaAlt/distance);
+else
+{
+trackerTiltSetpoint=pi/2;
+break;
+}
+
+if(deltaEasting==0) //Easting cannot be zero if we want to calculate the atan(northing/easting).
+{
+if(deltaNorthing<0)trackerPanSetpoint=-(pi)/2;
+else if(deltaNorthing!=0)trackerPanSetpoint=pi/2;
+
+}
+else if(deltaNorthing==0)
+{
+if(deltaEasting<0)trackerPanSetpoint=pi;
+else trackerPanSetpoint=0;
+}
+else
+{
+trackerPanSetpoint=atan(deltaNorthing/deltaEasting);
+
+if(deltaNorthing<0)if(trackerPanSetpoint>0)tracker PanSetpoint-=pi;
+if(deltaNorthing>0)if(trackerPanSetpoint<0)tracker PanSetpoint+=pi;
+
+trackerPanSetpoint-=trackerHeading;
+}
+
+trackerPanSetpoint+=panDefaultPos;
+
+if(trackerPanSetpoint<= (overlapFactor * (-pi)))trackerPanSetpoint+=2*pi;
+else if(trackerPanSetpoint>(overlapFactor * pi))trackerPanSetpoint-=2*pi;
+
+if(trackerPanSetpoint<= (overlapFactor * (-pi)))trackerPanSetpoint+=2*pi;
+else if(trackerPanSetpoint>(overlapFactor * pi))trackerPanSetpoint-=2*pi;
+
+
+break;
+default:
+trackerStatus=UNINIT;
+}
+
+time=millis();
+if((time-time_last)>=servoRefreshInterval)
+{
+time_last=time;
+
+digitalWrite(greenLed,LOW);
+
+int panCommand=(int)(180*(trackerPanSetpoint/pi));
+int tiltCommand=(int)180*(trackerTiltSetpoint/pi);
+
+if((trackerPanSetpoint<((overlapFactor-1)*(-pi))) || ((trackerPanSetpoint <= ((overlapFactor-1)*pi)) && !singPositive) )
+{
+tiltCommand=180-tiltCommand;
+panCommand+=180;
+}
+if(trackerPanSetpoint<(overlapFactor-1)*(-pi))singPositive=false;
+else if(trackerPanSetpoint > (overlapFactor-1)*pi)singPositive=true;
+
+
+
+
+if(tiltCurrentPos>tiltCommand)tiltCurrentPos--;
+else if(tiltCurrentPos
+
+if(panCurrentPos>panCommand)panCurrentPos--;
+else if(panCurrentPos
+
+panCurrentPos=constrain(panCurrentPos,0,180);
+tiltCurrentPos=constrain(tiltCurrentPos,0,180);
+}
+
+PanServo.write(panCurrentPos);
+TiltServo.write(tiltCurrentPos);
+
+}
+}
